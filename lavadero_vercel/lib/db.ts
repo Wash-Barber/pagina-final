@@ -1,11 +1,14 @@
-import { Pool } from 'pg';
+// lib/db.ts
+// Base de datos temporal en memoria para la demo en Vercel
+declare global {
+  var _washes: any[];
+}
 
-const globalForPg = globalThis as unknown as { pool?: Pool };
+// Mantenemos la instancia viva en la memoria del servidor
+if (!globalThis._washes) {
+  globalThis._washes = [];
+}
 
-export const pool = globalForPg.pool ?? new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined,
-  max: 5,
-});
-
-if (process.env.NODE_ENV !== 'production') globalForPg.pool = pool;
+export const db = {
+  washes: globalThis._washes
+};
