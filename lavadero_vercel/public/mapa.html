@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Wash & Barber · Mapa 3D</title>
+<style>
+:root{--bg:#09090b;--amber:#f59e0b;--zinc:#18181b;--tx:#fafafa;--mu:#a1a1aa}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--tx);font-family:system-ui,"Segoe UI",Roboto,sans-serif}
+#c{position:fixed;inset:0;width:100vw;height:100vh;display:block;touch-action:none;cursor:grab}
+.hud{position:fixed;z-index:2;pointer-events:none}
+#brand{top:16px;left:18px}
+#brand b{color:var(--amber);font-size:22px;letter-spacing:.14em}
+#brand span{display:block;color:var(--mu);font-size:12px;letter-spacing:.08em;margin-top:2px}
+#hint{bottom:14px;left:18px;color:var(--mu);font-size:12px;max-width:60vw}
+#reset{bottom:12px;right:16px;pointer-events:auto;background:var(--zinc);color:var(--amber);border:1px solid var(--amber);border-radius:8px;padding:8px 14px;font:inherit;font-size:13px;cursor:pointer}
+#reset:hover{background:var(--amber);color:#000}
+/* Tooltip que sigue al mouse */
+#tip{position:fixed;z-index:3;left:0;top:0;pointer-events:none;opacity:0;transition:opacity .15s;max-width:260px;
+ background:rgba(24,24,27,.94);border:1px solid var(--amber);border-radius:10px;padding:10px 12px;box-shadow:0 8px 30px rgba(0,0,0,.6)}
+#tip b{color:var(--amber);font-size:15px;display:block}
+#tip i{font-style:normal;font-size:11px;color:var(--mu);letter-spacing:.06em;text-transform:uppercase}
+#tip p{margin:6px 0 0;font-size:12.5px;line-height:1.35;color:#d4d4d8}
+#tip.emp{border-color:#ccff00}   /* el Panel de Empleado usa el verde lima de su app */
+#tip.emp b{color:#ccff00}
+/* Modal del Kiosko (click en el tótem de ingreso) */
+#kiosk{position:fixed;inset:0;z-index:10;display:none;align-items:center;justify-content:center;background:rgba(9,9,11,.72);backdrop-filter:blur(4px)}
+#kiosk.open{display:flex}
+#kiosk .box{width:min(92vw,380px);text-align:center;background:var(--zinc);border:1px solid var(--amber);border-radius:14px;padding:26px 22px 22px;box-shadow:0 0 40px rgba(245,158,11,.25),0 20px 60px rgba(0,0,0,.7)}
+#kiosk b{display:block;color:var(--amber);font-size:20px;letter-spacing:.03em}
+#kiosk .bar{height:4px;border-radius:2px;background:#27272a;overflow:hidden;margin:16px 0 12px}
+#kiosk .bar i{display:block;height:100%;width:40%;background:var(--amber);animation:kbar 1.1s ease-in-out infinite alternate}
+@keyframes kbar{from{margin-left:0}to{margin-left:60%}}
+#kiosk p{margin:0 0 18px;color:var(--mu);font-size:12.5px}
+#kioskClose{background:var(--zinc);color:var(--amber);border:1px solid var(--amber);border-radius:8px;padding:8px 18px;font:inherit;font-size:13px;cursor:pointer}
+#kioskClose:hover{background:var(--amber);color:#000}
+</style></head><body>
+<canvas id="c"></canvas>
+<div class="hud" id="brand"><b>WASH &amp; BARBER</b><span>Lavadero de vehículos + Barbería premium</span></div>
+<div class="hud" id="hint">Arrastrá para rotar · W A S D para moverte · Rueda / pellizco para zoom · Pasá el mouse (o tocá) un sector · Click en el Tótem de Ingreso</div>
+<button class="hud" id="reset">↻ Reiniciar vista</button>
+<div id="tip"></div>
+<div id="kiosk" role="dialog" aria-modal="true" aria-labelledby="kioskTitle"><div class="box">
+  <b id="kioskTitle">Abriendo App de Kiosko...</b><div class="bar"><i></i></div>
+  <p>Zona de Ingreso · Tótem</p><button id="kioskClose">Cerrar</button></div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+(() => {
+'use strict';
+/* ============ 1. ESCENA, CÁMARA, RENDERER ============ */
+const AMBER = 0xf59e0b, ZINC = 0x27272a, CYAN = 0x38bdf8;
+const LIME = 0xccff00;                         // verde lima de la app de empleados (el ámbar queda para el tótem de clientes)
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.outputEncoding = THREE.sRGBEncoding;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x09090b);
+scene.fog = new THREE.FogExp2(0x09090b, 0.0085);
+
+const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 400);
+const controls = new THREE.OrbitControls(camera, canvas);
+controls.enableDamping = true; controls.dampingFactor = 0.06;
+controls.maxPolarAngle = Math.PI / 2.15;      // no permite bajar del suelo
+controls.minDistance = 10; controls.maxDistance = 110;
+
+/* ============ 2. HELPERS DE GEOMETRÍA ============ */
+// Cada llamada crea un material NUEVO: así el brillo de un sector no afecta a otro.
+const mat  = (color, o = {}) => new THREE.MeshStandardMaterial(Object.assign({ color, roughness: .55, metalness: .25 }, o));
+const glow = (color, i = .8, o = {}) => mat(color, Object.assign({ emissive: color, emissiveIntensity: i }, o));
+const add  = (p, m, x = 0, y = 0, z = 0) => { m.position.set(x, y, z); p.add(m); return m; };
+const box  = (p, w, h, d, m, x, y, z) => add(p, new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m), x, y, z);
+const cyl  = (p, rt, rb, h, m, x, y, z, seg = 24) => add(p, new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, h, seg), m), x, y, z);
+const plight = (p, color, i, dist, x, y, z) => { const l = new THREE.PointLight(color, i, dist); l.position.set(x, y, z); p.add(l); return l; };
+
+// Cartel flotante (sprite con texto dibujado en canvas)
+function label(parent, text, x, y, z, s = 1, w = 640) {
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = 128;
+  const g = cv.getContext('2d');
+  g.fillStyle = 'rgba(9,9,11,.82)'; g.fillRect(0, 16, w, 96);
+  g.strokeStyle = '#f59e0b'; g.lineWidth = 4; g.strokeRect(2, 18, w - 4, 92);
+  g.fillStyle = '#fbbf24'; g.font = '700 40px system-ui,Segoe UI,sans-serif';
+  g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(text, w / 2, 66);
+  const t = new THREE.CanvasTexture(cv); t.encoding = THREE.sRGBEncoding;
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, transparent: true, fog: false, toneMapped: false }));
+  sp.scale.set(w / 100 * s, 1.28 * s, 1); sp.position.set(x, y, z); parent.add(sp);
+}
+
+/* ============ 3. SECTORES (zonas interactivas) ============ */
+const sectors = [], pickables = [], anims = [], totemTargets = [];
+// Crea un grupo con una "losa" base. Todo lo que se agregue al grupo se resalta junto.
+function sector(name, lane, desc, cx, cz, w, d, color, lift = 0, base = .1) {
+  const g = new THREE.Group(); g.position.set(cx, 0, cz);
+  g.userData = { name, lane, desc, h: 0, mats: [] };
+  const pad = box(g, w, .1, d, glow(color, base, { color: 0x1c1c20, roughness: .8, metalness: .1 }), 0, .05 + lift, 0);
+  pad.userData.pad = true;
+  scene.add(g); sectors.push(g); return g;
+}
+// Al final: registra qué mallas se pueden "pickear" y qué materiales brillan al hover.
+function finalizeSectors() {
+  sectors.forEach(g => {
+    const seen = new Set();
+    g.traverse(o => {
+      if (!o.isMesh) return;
+      if (o.userData.totem || o.userData.employee) return;                 // el tótem de empleado tiene su propio hover (ver employeeTotem)
+      if (!o.userData.noRay) { o.userData.sector = g; pickables.push(o); }
+      const m = o.material; if (seen.has(m)) return; seen.add(m);
+      if (m.emissive.getHex() === 0) { m.emissive.setHex(AMBER); m.emissiveIntensity = 0; }
+      g.userData.mats.push({ m, base: m.emissiveIntensity, d: o.userData.pad ? 0.9 : 0.35 });
+    });
+  });
+}
+
+/* ============ 3b. TÓTEM DE EMPLEADO (pedestal con pantalla verde lima) ============ */
+// Textura de la pantalla: fondo lima + botón oscuro "AVANZAR". Se comparte entre los 9 tótems.
+let _empTex = null;
+function empScreenTex() {
+  if (_empTex) return _empTex;
+  const c = document.createElement('canvas'); c.width = 320; c.height = 200;
+  const g = c.getContext('2d');
+  g.fillStyle = '#ccff00'; g.fillRect(0, 0, 320, 200);                       // fondo lima (lo que "emite" luz)
+  g.fillStyle = '#1a2600'; g.fillRect(0, 0, 320, 40);                        // barra superior
+  g.fillStyle = '#ccff00'; g.font = '700 22px system-ui,Segoe UI,sans-serif';
+  g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('PANEL EMPLEADO', 160, 21);
+  g.fillStyle = '#1a2600'; g.font = '600 20px system-ui,Segoe UI,sans-serif'; g.fillText('Confirmar etapa', 160, 76);
+  g.fillRect(22, 106, 276, 72);                                              // botón (zona oscura = no emite)
+  g.fillStyle = '#ccff00'; g.font = '800 34px system-ui,Segoe UI,sans-serif'; g.fillText('AVANZAR ▶', 160, 143);
+  _empTex = new THREE.CanvasTexture(c); _empTex.encoding = THREE.sRGBEncoding;
+  return _empTex;
+}
+
+// Crea un pedestal delgado de metal oscuro con pantalla inclinada que brilla en verde lima.
+//  parent: sector (Group) donde se coloca · x,y,z: posición local · rotY: giro opcional (la pantalla mira hacia +z)
+// Todas sus mallas se agregan a `pickables`; al pasar el mouse se resalta el tótem y el tooltip dice "Panel de Empleado".
+function employeeTotem(parent, x, y, z, rotY = 0) {
+  const t = new THREE.Group(); t.position.set(x, y, z); t.rotation.y = rotY; parent.add(t);
+  const metal = () => mat(ZINC, { metalness: .85, roughness: .35 });
+  const meshes = [];
+  const m = o => { meshes.push(o); return o; };
+
+  // Base + columna + cabezal (metal oscuro)
+  m(box(t, .7, .08, .5, metal(), 0, .04, 0));
+  m(box(t, .14, 1.0, .14, mat(0x1f1f23, { metalness: .9, roughness: .3 }), 0, .58, 0));
+  const head = new THREE.Group(); head.position.set(0, 1.3, .02); head.rotation.x = -.35; t.add(head);   // pantalla inclinada hacia arriba
+  m(box(head, .66, .46, .07, metal(), 0, 0, 0));                                                          // marco / carcasa
+  // Pantalla (caja plana emisiva): el color lima viene de la textura emisiva
+  const screenMat = mat(0x050800, { emissive: 0xffffff, emissiveMap: empScreenTex(), emissiveIntensity: 1.0, roughness: .4, metalness: .1 });
+  m(box(head, .58, .37, .02, screenMat, 0, 0, .045));
+  // Anillo lima en la base (acento luminoso)
+  const ringMat = glow(LIME, .6);
+  m(box(t, .74, .02, .54, ringMat, 0, .085, 0));
+
+  // Halo suave (sprite aditivo, no interactivo) para que se vea desde lejos sin sumar luces a la escena
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: DOT, color: LIME, transparent: true, opacity: .35, blending: THREE.AdditiveBlending, depthWrite: false }));
+  halo.scale.set(1.7, 1.3, 1); halo.position.set(0, 0, .12); head.add(halo);
+
+  // Zona de hover generosa e invisible (la pantalla es chica, así es más fácil apuntarle / tocarla)
+  const hit = box(t, .95, 1.9, .75, new THREE.MeshBasicMaterial({ visible: false }), 0, .95, 0); meshes.push(hit);
+
+  // Objeto "objetivo" del hover: mismo formato que un sector, así reutiliza el tooltip y el brillo
+  const p = parent.userData || {};
+  const target = { userData: {
+    name: 'Panel de Empleado', emp: true,
+    lane: (p.lane ? p.lane.split(' · ')[0] + ' · ' : '') + (p.name || ''),
+    desc: 'Estación donde el personal confirma el fin de la etapa y notifica al cliente.',
+    h: 0, mats: [{ m: screenMat, base: 1.0, d: 1.1 }, { m: ringMat, base: .6, d: 1.2 }]
+  } };
+  totemTargets.push(target);
+  meshes.forEach(o => { o.userData.totem = true; o.userData.sector = target; pickables.push(o); });
+  return t;
+}
+
+/* ============ 3c. EMPLEADOS (humanos abstractos low-poly) ============ */
+const UNIFORME = 0x84cc16;                       // lima de la app de empleados, un poco más apagado para el uniforme
+// Mira hacia +z (rotY gira hacia +x). Alto total ≈ 1.7 u. No es "pickeable": el hover sigue siendo del sector.
+function createEmployee(parent, x, y, z, colorUniforme = UNIFORME, rotY = 0) {
+  const e = new THREE.Group(); e.position.set(x, y, z); e.rotation.y = rotY; parent.add(e);
+  const flat = (c) => mat(c, { flatShading: true, roughness: .8, metalness: .05 });
+  const uni = flat(colorUniforme), skin = flat(0xe0b48a), dark = flat(0x1c1c20), apron = flat(0x18181b);
+  const part = o => { o.userData.employee = true; return o; };
+  [-.11, .11].forEach(s => part(cyl(e, .085, .075, .62, dark, s, .31, 0, 6)));                    // piernas
+  part(cyl(e, .22, .27, .72, uni, 0, .98, 0, 8));                                                 // cuerpo
+  part(box(e, .3, .5, .03, apron, 0, .92, .255));                                                 // delantal
+  [-1, 1].forEach(s => part(cyl(e, .055, .05, .55, uni, s * .3, 1.05, 0, 6)).rotation.z = s * .1); // brazos
+  part(add(e, new THREE.Mesh(new THREE.SphereGeometry(.17, 8, 6), skin), 0, 1.5, 0));             // cabeza
+  part(cyl(e, .18, .18, .08, uni, 0, 1.66, 0, 8));                                                // gorra
+  part(box(e, .22, .02, .12, uni, 0, 1.63, .18));                                                 // visera
+  return e;
+}
+
+/* ============ 4. SUELO Y LOTE ============ */
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), mat(0x070709, { roughness: 1, metalness: 0 }));
+ground.rotation.x = -Math.PI / 2; ground.position.y = -.2; scene.add(ground);
+box(scene, 68, .2, 40, mat(0x1a1a1f, { roughness: .45, metalness: .35 }), 0, -.1, 1);   // asfalto pulido
+[[68.4, .3, 0, -19], [68.4, .3, 0, 21], [.3, 40.3, -34, 1], [.3, 40.3, 34, 1]].forEach(([w, d, x, z]) =>
+  box(scene, w, .08, d, glow(AMBER, .6), x, .02, z));                                   // borde ámbar del lote
+box(scene, 40, .02, 7.4, mat(0x101013, { roughness: .9 }), -4, .01, -6);                // carril autos
+box(scene, 32, .02, 6.4, mat(0x101013, { roughness: .9 }), -8, .01, 6);                 // carril motos
+
+/* ============ 5. LUCES ============ */
+scene.add(new THREE.AmbientLight(0x52525b, .55));
+const moon = new THREE.DirectionalLight(0x8899cc, .35); moon.position.set(-30, 50, 20); scene.add(moon);
+
+/* ============ 6. ZONA DE INGRESO + TÓTEM ============ */
+const ing = sector('Zona de Ingreso · Tótem', 'Entrada',
+  'El cliente ingresa su teléfono, elige vehículo y tipo de lavado, y recibe un link para seguir el proceso desde su celular.',
+  -28, -1, 6, 9, AMBER, 0, .12);
+box(ing, .7, 3.2, 1.3, mat(0x111113, { metalness: .8, roughness: .3 }), 0, 1.6, 0);          // cuerpo del tótem
+box(ing, .05, 1.7, 1.0, glow(AMBER, 1.1), .38, 2.2, 0);                                     // pantalla ámbar
+box(ing, .05, .5, .7, glow(0xfef3c7, .7), .38, 1.0, 0);                                     // teclado
+box(ing, .9, .12, 1.5, glow(AMBER, 1), 0, 3.25, 0);                                         // tope luminoso
+[-4.2, 4.2].forEach(z => box(ing, .35, 3.6, .35, mat(ZINC), 0, 1.8, z));                    // pórtico de entrada
+box(ing, .4, .3, 8.8, glow(AMBER, .8), 0, 3.7, 0);
+plight(ing, AMBER, 1.4, 16, 2, 3, 0);
+label(ing, 'INGRESO · TÓTEM', 0, 5.4, 0, .9);
+
+/* ============ 7. CARRIL AUTOS Y CAMIONETAS (5 estaciones) ============ */
+const CX = [-20, -12, -4, 4, 12], CZ = -6, LANE_A = 'Autos y camionetas';
+// Pórtico genérico: 2 postes + viga
+function gantry(g, span, h, pm, bm) {
+  [-1, 1].forEach(s => box(g, .35, h, .35, pm(), 0, h / 2, s * span / 2));
+  box(g, .4, .4, span + .4, bm, 0, h, 0);
+}
+// Burbujas / gotas que suben (partículas)
+function dotTex() {
+  const c = document.createElement('canvas'); c.width = c.height = 32; const x = c.getContext('2d');
+  const gr = x.createRadialGradient(16, 16, 2, 16, 16, 15); gr.addColorStop(0, '#fff'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+  x.fillStyle = gr; x.fillRect(0, 0, 32, 32); return new THREE.CanvasTexture(c);
+}
+const DOT = dotTex();
+function bubbles(parent, w, d, h, n, color) {
+  const pos = new Float32Array(n * 3), sp = new Float32Array(n);
+  const reset = (i, y) => { pos[i*3] = (Math.random() - .5) * w; pos[i*3+1] = y; pos[i*3+2] = (Math.random() - .5) * d; };
+  for (let i = 0; i < n; i++) { reset(i, Math.random() * h); sp[i] = .4 + Math.random() * .9; }
+  const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  parent.add(new THREE.Points(geo, new THREE.PointsMaterial({ color, size: .35, map: DOT, transparent: true, opacity: .8, depthWrite: false })));
+  anims.push(dt => { for (let i = 0; i < n; i++) { pos[i*3+1] += sp[i] * dt; if (pos[i*3+1] > h) reset(i, 0); } geo.attributes.position.needsUpdate = true; });
+}
+// Rodillo giratorio de baja resolución (flatShading para que se note la rotación)
+function roller(g, r, len, x, y, z, horizontal) {
+  const m = cyl(g, r, r, len, glow(CYAN, .4, { transparent: true, opacity: .8, flatShading: true }), x, y, z, 6);
+  if (horizontal) m.geometry.rotateX(Math.PI / 2);
+  anims.push(dt => { m.rotation[horizontal ? 'z' : 'y'] += dt * 5; });
+}
+
+// Sector 1 · En espera
+const a1 = sector('En espera', LANE_A + ' · Sector 1 de 5', 'El vehículo aguarda su turno en el estacionamiento. En el celular del cliente figura «En espera».', CX[0], CZ, 7, 7, 0xa1a1aa, 0, .06);
+const ln = () => glow(0xfafafa, .15, { roughness: .9 });
+box(a1, 5.6, .03, .12, ln(), 0, .12, -2.6); box(a1, 5.6, .03, .12, ln(), 0, .12, 2.6); box(a1, .12, .03, 5.3, ln(), 2.8, .12, 0);
+label(a1, '1 · En espera', 0, 3.2, 0, .85);
+
+// Sector 2 · Lavado de exterior (rodillos celestes + agua)
+const a2 = sector('Lavado de Exterior', LANE_A + ' · Sector 2 de 5', 'Túnel con rodillos y agua. Estado del cliente: «Lavado de exterior».', CX[1], CZ, 7, 7, CYAN, 0, .1);
+gantry(a2, 6.4, 4, () => mat(ZINC), glow(CYAN, .5));
+roller(a2, .4, 3, 0, 1.7, -2.4, false); roller(a2, .4, 3, 0, 1.7, 2.4, false); roller(a2, .35, 5.4, 0, 3.4, 0, true);
+bubbles(a2, 5.5, 5.5, 3.8, 70, 0xbae6fd);
+plight(a2, CYAN, 1.6, 15, 0, 3.4, 0);
+label(a2, '2 · Lavado de Exterior', 0, 5.6, 0, .95);
+
+// Sector 3 · Secado (turbinas de aire)
+const a3 = sector('Secado', LANE_A + ' · Sector 3 de 5', 'Pórtico con turbinas de aire que secan el vehículo. Estado del cliente: «Secado».', CX[2], CZ, 7, 7, 0xe0f2fe, 0, .08);
+gantry(a3, 6.4, 4, () => mat(ZINC), glow(0xe0f2fe, .4));
+const turb = () => mat(0x3f3f46, { metalness: .7, roughness: .3 });
+[-1.9, 0, 1.9].forEach(z => { box(a3, 1.5, .9, 1.5, turb(), 0, 3.3, z); box(a3, 1.2, .06, 1.2, glow(0xbae6fd, .9), 0, 2.82, z); });
+[-1, 1].forEach(s => { box(a3, 1.2, 1.6, .8, turb(), 0, 1.5, s * 2.6); box(a3, 1, 1.3, .06, glow(0xbae6fd, .9), 0, 1.5, s * 2.17); });
+plight(a3, 0xdbeafe, 1.2, 14, 0, 3.4, 0);
+label(a3, '3 · Secado', 0, 5.4, 0, .85);
+
+// Sector 4 · Limpieza de habitáculo (zona techada, luz cálida)
+const a4 = sector('Limpieza de Habitáculo', LANE_A + ' · Sector 4 de 5', 'Zona techada con luz cálida donde se limpia el interior. Estado del cliente: «Limpieza de habitáculo».', CX[3], CZ, 7, 7, 0xfb923c, 0, .1);
+[[-3.2, -3.2], [3.2, -3.2], [-3.2, 3.2], [3.2, 3.2]].forEach(([x, z]) => box(a4, .3, 3.8, .3, mat(ZINC), x, 1.9, z));
+box(a4, 7.4, .25, 7.4, mat(0x18181b, { metalness: .5 }), 0, 3.9, 0);
+box(a4, 6, .06, .4, glow(0xffb347, 1.4), 0, 3.74, -1.5); box(a4, 6, .06, .4, glow(0xffb347, 1.4), 0, 3.74, 1.5);
+plight(a4, 0xffb347, 1.6, 14, 0, 3.2, 0);
+label(a4, '4 · Limpieza de Habitáculo', 0, 5.2, 0, 1.05);
+
+// Sector 5 · Lavado finalizado (zona de entrega brillante)
+const a5 = sector('Lavado Finalizado', LANE_A + ' · Sector 5 de 5', 'Zona de entrega. El cliente recibe el aviso «Lavado finalizado» y pasa a retirar su vehículo.', CX[4], CZ, 7, 7, AMBER, 0, .35);
+gantry(a5, 6.4, 4, () => mat(ZINC), glow(AMBER, 1.2));
+plight(a5, 0xfff1c9, 2, 16, 0, 4.5, 0);
+label(a5, '5 · Lavado Finalizado', 0, 5.6, 0, .95);
+
+/* ============ 8. CARRIL MOTOS (4 estaciones, más pequeño) ============ */
+const MX = [-20, -12, -4, 4], MZ = 6, LANE_M = 'Motos';
+const m1 = sector('En espera', LANE_M + ' · Sector 1 de 4', 'La moto aguarda su turno. Estado del cliente: «En espera».', MX[0], MZ, 6, 5, 0xa1a1aa, 0, .06);
+box(m1, 4.4, .03, .1, ln(), 0, .12, -1.8); box(m1, 4.4, .03, .1, ln(), 0, .12, 1.8);
+label(m1, '1 · En espera', 0, 2.8, 0, .75);
+
+const m2 = sector('Proceso de Lavado', LANE_M + ' · Sector 2 de 4', 'Lavado completo de la moto con agua y espuma. Estado del cliente: «En proceso de lavado».', MX[1], MZ, 6, 5, CYAN, 0, .1);
+gantry(m2, 4.4, 3, () => mat(ZINC), glow(CYAN, .5));
+roller(m2, .3, 2.2, 0, 1.3, -1.7, false); roller(m2, .3, 2.2, 0, 1.3, 1.7, false);
+bubbles(m2, 4, 3.6, 2.8, 45, 0xbae6fd);
+plight(m2, CYAN, 1.3, 12, 0, 2.6, 0);
+label(m2, '2 · Proceso de Lavado', 0, 4.4, 0, .85);
+
+const m3 = sector('Proceso de Secado', LANE_M + ' · Sector 3 de 4', 'Secado con turbinas de aire. Estado del cliente: «En proceso de secado».', MX[2], MZ, 6, 5, 0xe0f2fe, 0, .08);
+gantry(m3, 4.4, 3, () => mat(ZINC), glow(0xe0f2fe, .4));
+[-1, 1].forEach(s => { box(m3, 1, 1.3, .7, turb(), 0, 1.2, s * 1.9); box(m3, .8, 1, .06, glow(0xbae6fd, .9), 0, 1.2, s * 1.53); });
+box(m3, 1.2, .7, 1.2, turb(), 0, 2.5, 0); box(m3, 1, .06, 1, glow(0xbae6fd, .9), 0, 2.13, 0);
+plight(m3, 0xdbeafe, 1, 12, 0, 2.6, 0);
+label(m3, '3 · Proceso de Secado', 0, 4.4, 0, .85);
+
+const m4 = sector('Finalizado', LANE_M + ' · Sector 4 de 4', 'Moto lista. El cliente recibe «Lavado finalizado» en su celular.', MX[3], MZ, 6, 5, AMBER, 0, .35);
+gantry(m4, 4.4, 3, () => mat(ZINC), glow(AMBER, 1.2));
+plight(m4, 0xfff1c9, 1.6, 13, 0, 3.4, 0);
+label(m4, '4 · Finalizado', 0, 4.4, 0, .8);
+
+// Carteles de carril
+label(scene, 'CARRIL AUTOS Y CAMIONETAS', -4, 7.2, -11.5, 1.2, 640);
+label(scene, 'CARRIL MOTOS', -8, 6, 10.5, 1, 640);
+
+/* ============ 9. BARBERÍA (edificio de cristal) ============ */
+const bb = sector('Barbería Wash & Barber', 'Edificio principal', 'Barbería premium. Mientras el vehículo se lava, el cliente se corta el pelo o espera relajado.', 22, 8, 14, 12, AMBER, 0, .05);
+const glass = () => mat(AMBER, { transparent: true, opacity: .3, roughness: .1, metalness: .1, depthWrite: false });
+const wall = (w, h, d, x, y, z, mt) => { box(bb, w, h, d, mt || glass(), x, y, z).userData.noRay = true; };   // los vidrios no bloquean el raycast
+wall(14, 4.6, .15, 0, 2.4, -6); wall(14, 4.6, .15, 0, 2.4, 6); wall(.15, 4.6, 12, -7, 2.4, 0); wall(.15, 4.6, 12, 7, 2.4, 0);
+wall(14.4, .2, 12.4, 0, 4.8, 0, mat(0xe4e4e7, { transparent: true, opacity: .18, depthWrite: false }));  // techo vidriado
+[[-7, -6], [7, -6], [-7, 6], [7, 6]].forEach(([x, z]) => box(bb, .3, 4.8, .3, glow(AMBER, .5), x, 2.4, z));
+box(bb, 14.4, .15, .3, glow(AMBER, 1), 0, 4.95, -6.05);
+plight(bb, 0xffc266, 1.4, 24, 0, 3.6, 0);
+label(bb, 'WASH & BARBER', 0, 7.2, -6, 1.4, 640);
+
+// Sillas de barbero (cilindros)
+const ch = sector('Sillas de Barbero', 'Barbería', 'Tres sillones de barbero con espejo. Atención con turno o por orden de llegada.', 18.5, 8, 6, 10, AMBER, .12, .08);
+const leather = () => mat(0x78350f, { roughness: .35, metalness: .1 });
+[-3, 0, 3].forEach(z => {
+  cyl(ch, .45, .5, .12, mat(0x52525b, { metalness: .9, roughness: .25 }), 0, .22, z);       // base
+  cyl(ch, .12, .12, .5, mat(0xd4d4d8, { metalness: 1, roughness: .15 }), 0, .55, z, 16);    // pistón hidráulico
+  cyl(ch, .55, .55, .28, leather(), 0, .93, z, 24);                                        // asiento
+  box(ch, .2, 1.1, .9, leather(), .5, 1.55, z);                                            // respaldo
+  box(ch, .5, .1, .5, leather(), -.55, .55, z);                                            // apoyapiés
+  box(ch, .06, 2.2, 2.2, glow(AMBER, .5), -2.78, 1.9, z);                                  // marco del espejo
+  box(ch, .04, 2, 2, mat(0xd4d4d8, { metalness: 1, roughness: .05 }), -2.72, 1.9, z);      // espejo
+});
+label(ch, 'Sillas de Barbero', 0, 5.6, 0, .85);
+
+// Sala de espera (sillones + celulares)
+const wr = sector('Sala de Espera', 'Barbería', 'Sillones donde el cliente se relaja y mira en su celular cómo avanza el lavado.', 25.5, 8, 6, 10, 0xfb923c, .12, .08);
+const sofa = () => mat(0x3f3f46, { roughness: .9, metalness: .05 });
+[[2, 1], [-2.2, -1]].forEach(([x, dir]) => {
+  box(wr, 1.3, .5, 4.4, sofa(), x, .4, 0); box(wr, .3, 1.1, 4.4, sofa(), x + dir * .65, .95, 0);
+  [-2.2, 2.2].forEach(z => box(wr, 1.3, .8, .25, sofa(), x, .65, z));                      // apoyabrazos
+});
+box(wr, 1.2, .35, 2, mat(0x18181b, { metalness: .6, roughness: .3 }), 0, .3, 0);           // mesa ratona
+box(wr, .3, .04, .5, glow(CYAN, 1.2), 1.7, .68, -1); box(wr, .3, .04, .5, glow(CYAN, 1.2), 1.7, .68, 1.2);  // celulares
+box(wr, .3, .04, .5, glow(CYAN, 1.2), -1.9, .68, .3);
+plight(wr, 0xffb347, 1, 10, 0, 3, 0);
+label(wr, 'Sala de Espera', 0, 5.6, 0, .85);
+
+/* ============ 10. VEHÍCULOS ABSTRACTOS ANIMADOS ============ */
+const movers = [];
+function wheel(p, r, w, x, z) { const m = cyl(p, r, r, w, mat(0x0a0a0a, { roughness: .9 }), x, r, z, 16); m.geometry.rotateX(Math.PI / 2); return m; }
+function makeCar(color) {                                          // caja sobre 4 cilindros
+  const c = new THREE.Group(), ws = [];
+  box(c, 4, .8, 1.9, mat(color, { metalness: .7, roughness: .25 }), 0, .75, 0);
+  box(c, 2.1, .7, 1.7, mat(0x0b0b0e, { metalness: .9, roughness: .1, transparent: true, opacity: .85 }), -.2, 1.5, 0);
+  [-1.3, 1.3].forEach(x => [-.95, .95].forEach(z => ws.push(wheel(c, .4, .3, x, z))));
+  [-.6, .6].forEach(z => box(c, .05, .15, .4, glow(0xfff7d6, 1.5), 2.02, .85, z));
+  return { obj: c, wheels: ws, r: .4 };
+}
+function makeMoto(color) {                                         // más fino
+  const m = new THREE.Group(), ws = [];
+  box(m, 1.4, .25, .25, mat(0x18181b), 0, .75, 0);
+  box(m, .6, .3, .35, mat(color, { metalness: .7, roughness: .25 }), .2, 1.05, 0);
+  box(m, .7, .12, .3, mat(0x09090b), -.45, .98, 0);
+  box(m, .1, .8, .1, mat(0x52525b, { metalness: .9 }), .85, .8, 0).rotation.z = -.3;
+  box(m, .08, .08, .7, mat(0x52525b, { metalness: .9 }), .75, 1.2, 0);
+  box(m, .05, .12, .2, glow(0xfff7d6, 1.5), 1, 1.1, 0);
+  ws.push(wheel(m, .38, .15, .85, 0), wheel(m, .38, .15, -.85, 0));
+  return { obj: m, wheels: ws, r: .38 };
+}
+function spawn(v, x, z, speed, x0, x1) { v.obj.position.set(x, 0, z); scene.add(v.obj); movers.push({ ...v, speed, x0, x1 }); }
+spawn(makeCar(AMBER),    -25, CZ, 1.4, -26, 18);
+spawn(makeCar(0xe4e4e7),  -4, CZ, 1.4, -26, 18);
+spawn(makeMoto(0xfafafa), -25, MZ, 1.2, -26, 10);
+spawn(makeMoto(AMBER),     -8, MZ, 1.2, -26, 10);
+
+/* ============ 10b. TÓTEMS DE EMPLEADO EN CADA ESTACIÓN ============ */
+// Van sobre el borde frontal (+z) de cada sector, fuera de la trayectoria de los vehículos (que circulan por z = 0 local)
+// y lejos de pórticos, rodillos, turbinas y pilares. La pantalla mira hacia +z (pasillo central).
+[a1, a2, a3, a4, a5].forEach(s => { employeeTotem(s, 2.4, .1, 3.1); createEmployee(s, 1.5, .1, 3.15, UNIFORME, .6); });     // autos y camionetas (5 sectores)
+[m1, m2, m3, m4].forEach(s => { employeeTotem(s, 2.1, .1, 2.75); createEmployee(s, 1.2, .1, 2.8, UNIFORME, .6); });        // motos (4 sectores)
+
+finalizeSectors();
+
+/* ============ 11. INTERACTIVIDAD: RAYCASTER + TOOLTIP ============ */
+const tip = document.getElementById('tip');
+const ray = new THREE.Raycaster(), mouse = new THREE.Vector2();
+let hovered = null, pending = false, mx = 0, my = 0, freeMouse = false, down = { x: 0, y: 0, ok: false };
+
+function placeTip() {                                              // sigue al cursor sin salirse de la pantalla
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  tip.style.transform = `translate(${Math.min(mx + 16, innerWidth - w - 8)}px,${Math.min(my + 16, innerHeight - h - 8)}px)`;
+}
+function setHover(g) {
+  if (g === hovered) return;
+  hovered = g; canvas.style.cursor = g ? 'pointer' : 'grab';
+  if (g) { tip.classList.toggle('emp', !!g.userData.emp); tip.innerHTML = `<b>${g.userData.name}</b><i>${g.userData.lane}</i><p>${g.userData.desc}</p>${g.userData.cta ? `<p style="color:#fbbf24">▸ ${g.userData.cta}</p>` : ''}`; tip.style.opacity = 1; placeTip(); }
+  else tip.style.opacity = 0;
+}
+function setPointer(e) { mx = e.clientX; my = e.clientY; mouse.set(mx / innerWidth * 2 - 1, -(my / innerHeight) * 2 + 1); }
+canvas.addEventListener('pointermove', e => { setPointer(e); freeMouse = e.pointerType === 'mouse' && e.buttons === 0; pending = freeMouse; if (hovered) placeTip(); });
+canvas.addEventListener('pointerdown', e => { setPointer(e); down = { x: e.clientX, y: e.clientY, ok: !intro }; if (e.pointerType !== 'mouse') pending = true; if (intro) intro.t = intro.dur; });  // tocar salta el paneo
+canvas.addEventListener('pointerleave', () => { pending = false; freeMouse = false; setHover(null); });
+
+/* ============ 11b. CLICK EN EL TÓTEM DE CLIENTE (abre el modal del kiosko) ============ */
+ing.userData.cta = 'Click para abrir la app de Kiosko';
+const kiosk = document.getElementById('kiosk'), kioskClose = document.getElementById('kioskClose');
+const kioskOpen = () => kiosk.classList.contains('open');
+function openKiosk() { setHover(null); releaseKeys(); kiosk.classList.add('open'); kioskClose.focus(); }
+function closeKiosk() { kiosk.classList.remove('open'); }
+kioskClose.addEventListener('click', closeKiosk);
+kiosk.addEventListener('click', e => { if (e.target === kiosk) closeKiosk(); });      // click fuera de la tarjeta también cierra
+canvas.addEventListener('click', e => {
+  if (!down.ok || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 6) return;     // fue un arrastre (rotación), no un click
+  setPointer(e); ray.setFromCamera(mouse, camera);
+  const hit = ray.intersectObjects(pickables, false)[0];
+  if (hit && hit.object.userData.sector === ing) openKiosk();
+});
+
+/* ============ 12. CÁMARA: PANEO INICIAL -> OrbitControls ============ */
+const TARGET = new THREE.Vector3(0, 0, 1);
+let intro = null;
+function startIntro() {
+  const k = innerWidth / innerHeight < 1 ? 1.7 : 1;                // más lejos en pantallas verticales
+  intro = { t: 0, dur: 6, from: new THREE.Vector3(-62, 16, -48), to: new THREE.Vector3(0, 34 * k, 44 * k) };
+  controls.enabled = false;
+}
+document.getElementById('reset').addEventListener('click', startIntro);
+
+/* ============ 12b. MOVIMIENTO WASD (relativo a hacia dónde mira la cámara) ============ */
+const keys = { KeyW: false, KeyA: false, KeyS: false, KeyD: false };   // por posición de tecla: funciona con cualquier layout
+const BOUNDS = { x: 46, z: 30 };                                        // límite del punto de mira (el lote mide 68 × 40)
+const vel = new THREE.Vector3(), wish = new THREE.Vector3();
+function releaseKeys() { for (const k in keys) keys[k] = false; }
+addEventListener('keydown', e => {
+  if (e.key === 'Escape') { closeKiosk(); return; }
+  if (!(e.code in keys) || e.ctrlKey || e.metaKey || e.altKey || kioskOpen()) return;
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+  keys[e.code] = true; e.preventDefault();
+  if (intro) intro.t = intro.dur;                                       // moverse también salta el paneo inicial
+});
+addEventListener('keyup', e => { if (e.code in keys) keys[e.code] = false; });
+addEventListener('blur', releaseKeys);
+
+// Desplaza cámara y controls.target el mismo vector sobre el plano X/Z. Devuelve true si hubo movimiento.
+function moveWASD(dt) {
+  const f = (keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0), r = (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0);
+  const az = controls.getAzimuthalAngle(), s = Math.sin(az), c = Math.cos(az);
+  wish.set(r * c - f * s, 0, -r * s - f * c);                           // adelante = (-sen, -cos) · derecha = (cos, -sen)
+  if (wish.lengthSq() > 1) wish.normalize();                            // las diagonales no van más rápido
+  const speed = THREE.MathUtils.clamp(camera.position.distanceTo(controls.target) * .5, 8, 30);   // más zoom-out = más veloz
+  vel.lerp(wish.multiplyScalar(speed), 1 - Math.exp(-dt * 10));         // aceleración / frenado suaves
+  if (vel.lengthSq() < 1e-4) { vel.set(0, 0, 0); return false; }
+  const t = controls.target;
+  const nx = THREE.MathUtils.clamp(t.x + vel.x * dt, -BOUNDS.x, BOUNDS.x), nz = THREE.MathUtils.clamp(t.z + vel.z * dt, -BOUNDS.z, BOUNDS.z);
+  camera.position.x += nx - t.x; camera.position.z += nz - t.z; t.x = nx; t.z = nz;
+  return true;
+}
+
+/* ============ 13. LOOP + RESIZE ============ */
+function resize() {
+  renderer.setSize(innerWidth, innerHeight, false);
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize); resize(); startIntro();
+
+const clock = new THREE.Clock();
+(function loop() {
+  requestAnimationFrame(loop);
+  const dt = Math.min(clock.getDelta(), .05);
+
+  if (intro) {                                                      // paneo con ease-out
+    intro.t += dt; const k = Math.min(1, intro.t / intro.dur), e = 1 - Math.pow(1 - k, 3);
+    camera.position.lerpVectors(intro.from, intro.to, e); camera.position.y += Math.sin(Math.PI * e) * 6;
+    camera.lookAt(TARGET);
+    if (k >= 1) { intro = null; controls.target.copy(TARGET); controls.enabled = true; controls.update(); }
+  } else { if (moveWASD(dt) && freeMouse) pending = true; controls.update(); }   // al caminar, el hover se re-evalúa solo
+
+  if (pending) {                                                    // raycast solo cuando el mouse se movió
+    pending = false; ray.setFromCamera(mouse, camera);
+    const hit = ray.intersectObjects(pickables, false)[0];
+    setHover(hit ? hit.object.userData.sector : null);
+  }
+
+  sectors.concat(totemTargets).forEach(g => {                       // brillo suave al pasar el mouse (sectores + tótems de empleado)
+    const u = g.userData, t = g === hovered ? 1 : 0;
+    if (Math.abs(u.h - t) > .001) { u.h += (t - u.h) * Math.min(1, dt * 10); u.mats.forEach(o => o.m.emissiveIntensity = o.base + o.d * u.h); }
+  });
+
+  movers.forEach(v => {                                             // vehículos en loop por su carril
+    const dx = v.speed * dt; v.obj.position.x += dx; if (v.obj.position.x > v.x1) v.obj.position.x = v.x0;
+    v.wheels.forEach(w => w.rotation.z -= dx / v.r);
+  });
+  anims.forEach(f => f(dt));
+  renderer.render(scene, camera);
+})();
+})();
+</script></body></html>
